@@ -27,6 +27,7 @@
 
 - [原型使用说明及已知限制](docs/PROTOTYPE-v0.1.md)
 - [SQLite 开发与 D1 迁移计划 V0.2](docs/DATABASE-SQLITE-D1-v0.2.md)
+- [自治世界运行与规则发布 V0.1](docs/WORLD-RUNTIME-v0.1.md)：无人在线时世界照常推进；版本切换与维护停服规则。
 - [规则引擎源码](src/engine.ts)
 - [单元测试](tests/engine.test.ts)
 - [批量模拟器](scripts/simulate.ts)
