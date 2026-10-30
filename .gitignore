@@ -19,3 +19,12 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local SQLite development and Wrangler state (never commit user data)
+.data/
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.wrangler/
