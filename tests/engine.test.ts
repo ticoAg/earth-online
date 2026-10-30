@@ -52,10 +52,34 @@ test('idempotency: re-submitting same key does not increase stats or re-roll', (
   const twice = processEvent(once.world, event, [RULE], roll);
   assert.equal(count, 1);
   assert.equal(once.world, twice.world);
-  assert.equal(once.result, twice.result);
+  assert.deepEqual(once.result, twice.result);
   assert.equal(twice.world.encounters.length, 1);
   assert.equal(twice.world.attempts.length, 1);
   assert.equal(twice.world.accepted.length, 1);
+});
+
+test('caller mutations do not rewrite the accepted event or stored replay result', () => {
+  const event = study(1);
+  const { world, result } = processEvent(advanced(), event, [RULE], () => 0);
+  event.payload.method = 'review';
+  result.createdEncounters[0]!.status = 'pending_choice';
+  result.createdEncounters.length = 0;
+  assert.equal(world.accepted[0]!.payload.method, 'problem_solving');
+  assert.equal(world.encounters.length, 1);
+  assert.equal(world.idempotency['req-1']!.createdEncounters.length, 1);
+  assert.equal(world.encounters[0]!.verification, 'unverified');
+});
+
+test('rejects a reused key with different input and honors disabled rules', () => {
+  const event = study(1);
+  const { world } = processEvent(advanced(), event, [RULE], () => .8);
+  assert.throws(() => processEvent(world, { ...event, durationMinutes: 60 }, [RULE]), /idempotency_key_conflict/);
+  assert.deepEqual(evaluateRules(advanced().character, event, [{...RULE, enabled: false}]), []);
+});
+
+test('accepts the documented UTC timestamp without fractional seconds', () => {
+  const event = {...study(1), occurredAt: '2026-01-03T10:00:00Z'};
+  assert.deepEqual(validateEvent(createWorld('p1', 30, .5, .5), event), []);
 });
 
 test('missed opportunity obeys one-attempt-per-seven-days', () => {
@@ -112,4 +136,83 @@ test('special idempotency keys do not read inherited Object prototype properties
   const two = processEvent(one.world, event, [RULE], () => .8);
   assert.equal(two.result.eventId, event.id);
   assert.equal(two.world.accepted.length, 1);
+});
+
+test('idempotency cannot expose another actor\'s result', () => {
+  const event = study(1);
+  const once = processEvent(createWorld('p1', 30, .5, .5), event, [RULE], () => .8);
+  assert.throws(() => processEvent(once.world, {...event, actorId: 'p2'}, [RULE], () => .8), /actor_mismatch/);
+});
+
+test('the same rule identity cannot be supplied twice for one source event', () => {
+  const unlimited = {...RULE, limit: {cooldown_days: 0, window_days: 1, max_attempts_per_window: 10}};
+  let draws = 0;
+  assert.throws(() => processEvent(advanced(), study(1), [unlimited, structuredClone(unlimited)], () => { draws++; return .9; }), /duplicate_rule/);
+  assert.equal(draws, 0);
+});
+
+test('rejects non-finite and incompatible condition values and unnormalized modifiers', () => {
+  const badValue = structuredClone(RULE);
+  badValue.require.all[0]!.value = Number.NaN;
+  assert.throws(() => validateRule(badValue), /invalid/);
+  const badType = structuredClone(RULE);
+  badType.require.all[0]!.value = true;
+  assert.throws(() => validateRule(badType), /invalid/);
+  const badModifier = structuredClone(RULE);
+  badModifier.chance.modifiers[0]!.path = 'character.skills.math_analysis';
+  assert.throws(() => validateRule(badModifier), /invalid/);
+});
+
+test('invalid duration is reported rather than crashing date handling', () => {
+  const invalid = {...study(1), durationMinutes: Number.NaN};
+  assert.ok(validateEvent(createWorld('p1', 30, .5, .5), invalid).includes('invalid_duration'));
+});
+
+test('unmet prerequisites do not call the random source', () => {
+  const result = processEvent(createWorld('p1', 0, .5, .5), study(1), [RULE], () => {
+    assert.fail('ineligible event must not draw');
+  });
+  assert.equal(result.world.attempts.length, 0);
+});
+
+test('trigger requires roll strictly less than probability, including zero and cap', () => {
+  const atCap: Rule = {...RULE, chance: {...RULE.chance, base: .9}};
+  assert.equal(evaluateRules(advanced().character, study(1), [atCap])[0]!.probability, .08);
+  const equal = processEvent(advanced(), study(1), [atCap], () => .08);
+  const below = processEvent(advanced(), study(1), [atCap], () => .079999);
+  assert.equal(equal.world.attempts[0]!.triggered, false);
+  assert.equal(below.world.attempts[0]!.triggered, true);
+  const zero: Rule = {...RULE, chance: {...RULE.chance, base: 0, modifiers: []}};
+  assert.equal(processEvent(advanced(), study(1), [zero], () => 0).world.attempts[0]!.triggered, false);
+});
+
+test('quota expires exactly after seven days and cooldown exactly after fourteen', () => {
+  const missed = processEvent(advanced(), study(1, 'problem_solving', 3), [RULE], () => .9);
+  const beforeWindow = {...study(2, 'problem_solving', 10), occurredAt: '2026-01-10T09:59:59.999Z'};
+  const before = processEvent(missed.world, beforeWindow, [RULE], () => { assert.fail('window still active'); });
+  const boundary = processEvent(before.world, study(3, 'problem_solving', 11), [RULE], () => .9);
+  // The accepted intermediate event is on Jan 10; a fresh replay verifies the exact boundary.
+  const exact = processEvent(missed.world, study(4, 'problem_solving', 10), [RULE], () => .9);
+  assert.equal(before.world.attempts.length, 1);
+  assert.equal(boundary.world.attempts.length, 2);
+  assert.equal(exact.world.attempts.length, 2);
+
+  const success = processEvent(advanced(), study(5, 'problem_solving', 3), [RULE], () => 0);
+  const almost = {...study(6, 'problem_solving', 17), occurredAt: '2026-01-17T09:59:59.999Z'};
+  const inCooldown = processEvent(success.world, almost, [RULE], () => { assert.fail('cooldown still active'); });
+  const atCooldown = processEvent(success.world, study(7, 'problem_solving', 17), [RULE], () => 0);
+  assert.equal(inCooldown.world.attempts.length, 1);
+  assert.equal(atCooldown.world.attempts.length, 2);
+});
+
+test('a failed roll leaves the input world untouched and historical replay survives a rule change', () => {
+  const initial = advanced();
+  const snapshot = JSON.stringify(initial);
+  assert.throws(() => processEvent(initial, study(1), [RULE], () => 1), /invalid_roll/);
+  assert.equal(JSON.stringify(initial), snapshot);
+  const first = processEvent(initial, study(1), [RULE], () => 0);
+  const newer = {...RULE, version: RULE.version + 1, chance: {...RULE.chance, base: 0, modifiers: []}};
+  const replay = processEvent(first.world, study(1), [newer], () => { assert.fail('replay must not redraw'); });
+  assert.deepEqual(replay.result, first.result);
+  assert.equal(replay.world.attempts[0]!.version, RULE.version);
 });
