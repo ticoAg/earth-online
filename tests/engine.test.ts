@@ -105,3 +105,11 @@ test('never mutates the previously passed world state', () => {
   processEvent(world, study(1), [RULE], () => .2);
   assert.equal(JSON.stringify(world), snapshot);
 });
+
+test('special idempotency keys do not read inherited Object prototype properties', () => {
+  const event = {...study(1), idempotencyKey: '__proto__'};
+  const one = processEvent(createWorld('p1', 20, .5, .5), event, [RULE], () => .8);
+  const two = processEvent(one.world, event, [RULE], () => .8);
+  assert.equal(two.result.eventId, event.id);
+  assert.equal(two.world.accepted.length, 1);
+});
