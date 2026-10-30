@@ -41,6 +41,8 @@ export type Condition = { path: Path; op: 'gte' | 'lte' | 'eq'; value: number | 
 export interface Rule {
   id: string;
   version: number;
+  enabled?: boolean;
+  scope?: 'character';
   listen: 'study.completed'[];
   require: { all: Condition[] };
   chance: {
@@ -69,6 +71,7 @@ export interface Encounter {
   sourceEventId: string;
   source: 'system_simulated';
   status: 'pending_choice';
+  verification: 'unverified';
 }
 export interface EventResult {
   eventId: string;
@@ -95,14 +98,18 @@ export function validateEvent(world: World, event: StudyEvent): string[] {
   if (event.type !== 'study.completed' || event.source !== 'self_reported') errors.push('unsupported_event');
   if (event.payload?.subject !== 'math_analysis' ||
       !['problem_solving', 'review', 'cross_domain'].includes(event.payload?.method)) errors.push('invalid_payload');
-  if (!Number.isInteger(event.durationMinutes) || event.durationMinutes < 15 || event.durationMinutes > 240) errors.push('invalid_duration');
+  const validDuration = Number.isInteger(event.durationMinutes) && event.durationMinutes >= 15 && event.durationMinutes <= 240;
+  if (!validDuration) errors.push('invalid_duration');
   if (typeof event.id !== 'string' || !event.id || typeof event.idempotencyKey !== 'string' || !event.idempotencyKey) errors.push('missing_id');
   if (typeof event.occurredAt !== 'string') { errors.push('invalid_time'); return errors; }
   const start = Date.parse(event.occurredAt);
-  if (!Number.isFinite(start) || !event.occurredAt.endsWith('Z') || new Date(start).toISOString() !== event.occurredAt) {
+  const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+  const canonical = event.occurredAt.replace(/Z$/, event.occurredAt.includes('.') ? 'Z' : '.000Z');
+  if (!Number.isFinite(start) || !iso.test(event.occurredAt) || new Date(start).toISOString() !== canonical) {
     errors.push('invalid_time');
     return errors;
   }
+  if (!validDuration) return errors;
   const end = start + event.durationMinutes * 60_000;
   // Explicit UTC day budget for MVP; crossing midnight is disallowed to avoid ambiguity.
   if (new Date(start).toISOString().slice(0, 10) !== new Date(end - 1).toISOString().slice(0, 10)) errors.push('crosses_utc_day');
@@ -134,7 +141,7 @@ export function applyProgression(character: Character, event: StudyEvent): { cha
     event.payload.method === 'cross_domain' && crossDomainSessions % 3 === 0 && character.mathAnalysis >= 30
   ), 0, 50);
   return {
-    delta,
+    delta: clamp(character.mathAnalysis + delta, 0, 100) - character.mathAnalysis,
     character: {
       ...character,
       mathAnalysis: clamp(character.mathAnalysis + delta, 0, 100),
@@ -164,12 +171,18 @@ function readValue(path: Path, character: Character, event: StudyEvent): number 
 
 /** Reject malformed rules rather than executing arbitrary scripts. */
 export function validateRule(rule: Rule): void {
-  if (!rule.id || !Number.isInteger(rule.version) || rule.version < 1) throw new Error('invalid_rule_identity');
+  if (!rule || typeof rule !== 'object' || typeof rule.id !== 'string' || !rule.id || !Number.isInteger(rule.version) || rule.version < 1) throw new Error('invalid_rule_identity');
+  if ((rule.enabled !== undefined && typeof rule.enabled !== 'boolean') || (rule.scope !== undefined && rule.scope !== 'character') ||
+      !Array.isArray(rule.listen) || rule.listen.length !== 1 || rule.listen[0] !== 'study.completed' ||
+      !rule.require || !Array.isArray(rule.require.all) || !rule.require.all.length ||
+      !rule.chance || !Array.isArray(rule.chance.modifiers) || !rule.limit ||
+      !Array.isArray(rule.effects) || rule.effects.length !== 1) throw new Error('invalid_rule_structure');
   if (rule.chance.model !== 'additive' || !Number.isFinite(rule.chance.base) || rule.chance.base < 0 ||
       !Number.isFinite(rule.chance.cap) || rule.chance.cap < 0 || rule.chance.cap > 1) throw new Error('invalid_probability');
-  if (rule.chance.modifiers.some(m => !Number.isFinite(m.weight) || m.weight < 0)) throw new Error('invalid_modifier');
+  if (rule.chance.modifiers.some(m => !m || !Number.isFinite(m.weight) || m.weight < 0 ||
+      !['character.hidden.associative_thinking', 'event.context.new_perspective'].includes(m.path))) throw new Error('invalid_modifier');
   if (!rule.listen.includes('study.completed') || !rule.require.all.length ||
-      rule.effects.some(e => e.type !== 'encounter.create' || e.encounter_type !== 'research_lead')) throw new Error('invalid_rule_structure');
+      rule.effects.some(e => !e || e.type !== 'encounter.create' || e.encounter_type !== 'research_lead')) throw new Error('invalid_rule_structure');
   const l = rule.limit;
   if (![l.cooldown_days, l.window_days, l.max_attempts_per_window].every(Number.isInteger) ||
       l.cooldown_days < 0 || l.window_days < 1 || l.max_attempts_per_window < 1) throw new Error('invalid_limits');
@@ -178,14 +191,22 @@ export function validateRule(rule: Rule): void {
     'character.knowledge.cross_domain_links', 'character.state.fatigue',
     'character.hidden.associative_thinking', 'event.context.new_perspective'
   ];
-  if (rule.require.all.some(c => !allowed.includes(c.path) || !['gte','lte','eq'].includes(c.op) ||
-      (typeof c.value !== 'number' && typeof c.value !== 'boolean')) ||
+  if (rule.require.all.some(c => !c || !allowed.includes(c.path) || !['gte','lte','eq'].includes(c.op) ||
+      (c.path === 'event.context.new_perspective'
+        ? typeof c.value !== 'boolean' || c.op !== 'eq'
+        : typeof c.value !== 'number' || !Number.isFinite(c.value))) ||
       rule.chance.modifiers.some(m => !allowed.includes(m.path))) throw new Error('invalid_path_or_condition');
 }
 
 export function evaluateRules(character: Character, event: StudyEvent, rules: Rule[]): { rule: Rule; probability: number }[] {
-  return rules.filter(rule => rule.listen.includes(event.type)).flatMap(rule => {
+  const identities = new Set<string>();
+  for (const rule of rules) {
     validateRule(rule);
+    const identity = JSON.stringify([rule.id, rule.version]);
+    if (identities.has(identity)) throw new Error('duplicate_rule_identity');
+    identities.add(identity);
+  }
+  return rules.filter(rule => rule.enabled !== false && rule.listen.includes(event.type)).flatMap(rule => {
     const passes = rule.require.all.every(c => {
       const actual = readValue(c.path, character, event);
       if (c.op === 'eq') return actual === c.value;
@@ -210,8 +231,15 @@ export const secureRoll: Roll = () => {
 };
 
 export function processEvent(world: World, event: StudyEvent, rules: Rule[], roll: Roll = secureRoll): { world: World; result: EventResult } {
+  if (event.actorId !== world.character.id) throw new Error('actor_mismatch');
   if (Object.hasOwn(world.idempotency, event.idempotencyKey)) {
-    return { world, result: world.idempotency[event.idempotencyKey]! };
+    const original = world.accepted.find(past => past.idempotencyKey === event.idempotencyKey);
+    if (!original || original.id !== event.id || original.type !== event.type || original.source !== event.source ||
+        original.occurredAt !== event.occurredAt || original.durationMinutes !== event.durationMinutes ||
+        original.payload?.subject !== event.payload?.subject || original.payload?.method !== event.payload?.method) {
+      throw new Error('idempotency_key_conflict');
+    }
+    return { world, result: structuredClone(world.idempotency[event.idempotencyKey]!) };
   }
   const errors = validateEvent(world, event);
   if (errors.length) throw new Error(errors.join(','));
@@ -234,7 +262,7 @@ export function processEvent(world: World, event: StudyEvent, rules: Rule[], rol
     attempts.push({ eventId: event.id, ruleId: rule.id, version: rule.version, at: event.occurredAt, probability, roll: value, triggered });
     if (triggered) for (const effect of rule.effects) {
       encounters.push({ id: `enc:${key}`, ruleId: rule.id, type: effect.encounter_type,
-        sourceEventId: event.id, source: 'system_simulated', status: 'pending_choice' });
+        sourceEventId: event.id, source: 'system_simulated', status: 'pending_choice', verification: 'unverified' });
     }
   }
   const result: EventResult = { eventId: event.id, delta, mastery: character.mathAnalysis,
@@ -243,10 +271,10 @@ export function processEvent(world: World, event: StudyEvent, rules: Rule[], rol
     result,
     world: {
       character,
-      accepted: [...world.accepted, event],
-      idempotency: { ...world.idempotency, [event.idempotencyKey]: result },
+      accepted: [...world.accepted, structuredClone(event)],
+      idempotency: { ...world.idempotency, [event.idempotencyKey]: structuredClone(result) },
       attempts: [...world.attempts, ...attempts],
-      encounters: [...world.encounters, ...encounters]
+      encounters: [...world.encounters, ...structuredClone(encounters)]
     }
   };
 }
