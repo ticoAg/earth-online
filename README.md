@@ -21,13 +21,31 @@
 - [MVP 开发方案 V0.1](docs/MVP-PLAN-v0.1.md)：垂直切片、分阶段任务、验收标准与风险。
 - [数学顿悟规则样例](examples/rules/math-insight.json)：纯配置的隐藏际遇示例。
 
+## 可运行原型
+
+当前代码实现数学学习成长、隐藏特性、一次性概率际遇、冷却、内存幂等与可复现离线模拟。
+
+- [原型使用说明及已知限制](docs/PROTOTYPE-v0.1.md)
+- [规则引擎源码](src/engine.ts)
+- [单元测试](tests/engine.test.ts)
+- [批量模拟器](scripts/simulate.ts)
+
+需要 Node.js 22.16+：
+
+~~~bash
+npm install
+npm run verify
+~~~
+
+该命令依次执行 TypeScript 类型检查、11 项单元测试及 1,000 个虚构角色的 120,000 条事件模拟。不会接入 AI 或 GPU。
+
 ## 规划中的技术栈
 
 Next.js / TypeScript / Node.js / PostgreSQL；按需引入事件队列，无需 GPU 或 AI API。
 
 ## 当前状态
 
-**需求与核心机制设计阶段，尚无可运行的游戏实现。**
+**已有可运行的纯 TypeScript 离线规则引擎原型。** 暂无网站、数据库、真实多人服务和完整成就系统。
 
 ## 研发路线
 
