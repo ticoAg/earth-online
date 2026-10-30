@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "earth-online",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-31",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "earth-online-production",
+      "database_id": "REPLACE_WITH_REAL_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
