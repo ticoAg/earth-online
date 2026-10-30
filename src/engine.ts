@@ -97,6 +97,7 @@ export function validateEvent(world: World, event: StudyEvent): string[] {
       !['problem_solving', 'review', 'cross_domain'].includes(event.payload?.method)) errors.push('invalid_payload');
   if (!Number.isInteger(event.durationMinutes) || event.durationMinutes < 15 || event.durationMinutes > 240) errors.push('invalid_duration');
   if (typeof event.id !== 'string' || !event.id || typeof event.idempotencyKey !== 'string' || !event.idempotencyKey) errors.push('missing_id');
+  if (typeof event.occurredAt !== 'string') { errors.push('invalid_time'); return errors; }
   const start = Date.parse(event.occurredAt);
   if (!Number.isFinite(start) || !event.occurredAt.endsWith('Z') || new Date(start).toISOString() !== event.occurredAt) {
     errors.push('invalid_time');
@@ -209,8 +210,9 @@ export const secureRoll: Roll = () => {
 };
 
 export function processEvent(world: World, event: StudyEvent, rules: Rule[], roll: Roll = secureRoll): { world: World; result: EventResult } {
-  const previous = world.idempotency[event.idempotencyKey];
-  if (previous) return { world, result: previous };
+  if (Object.hasOwn(world.idempotency, event.idempotencyKey)) {
+    return { world, result: world.idempotency[event.idempotencyKey]! };
+  }
   const errors = validateEvent(world, event);
   if (errors.length) throw new Error(errors.join(','));
   const { character, delta } = applyProgression(world.character, event);
