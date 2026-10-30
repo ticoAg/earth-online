@@ -5,7 +5,9 @@ import { dirname } from 'node:path';
 import type { SqlDatabase, SqlStatement, SqlResult, SqlValue } from '../src/db/repository.ts';
 
 class LocalStatement implements SqlStatement {
-  constructor(readonly sql: string, readonly params: SqlValue[] = []) {}
+  readonly sql: string;
+  readonly params: SqlValue[];
+  constructor(sql: string, params: SqlValue[] = []) { this.sql = sql; this.params = params; }
   bind(...values: SqlValue[]): LocalStatement { return new LocalStatement(this.sql, values); }
 }
 
