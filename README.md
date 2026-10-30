@@ -26,6 +26,7 @@
 当前代码实现数学学习成长、隐藏特性、一次性概率际遇、冷却、内存幂等与可复现离线模拟。
 
 - [原型使用说明及已知限制](docs/PROTOTYPE-v0.1.md)
+- [SQLite 开发与 D1 迁移计划 V0.2](docs/DATABASE-SQLITE-D1-v0.2.md)
 - [规则引擎源码](src/engine.ts)
 - [单元测试](tests/engine.test.ts)
 - [批量模拟器](scripts/simulate.ts)
@@ -37,15 +38,25 @@ npm install
 npm run verify
 ~~~
 
-该命令依次执行 TypeScript 类型检查、单元测试及两组各 1,000 个虚构角色的离线模拟（每组 120,000 条事件）。不会接入 AI 或 GPU。
+该命令依次执行 TypeScript 类型检查、单元测试（含临时 SQLite 数据库验证）及两组各 1,000 个虚构角色的离线模拟（每组 120,000 条事件）。不会接入 AI 或 GPU。
+
+本地数据库演示：
+
+~~~bash
+npm run db:migrate
+npm run db:seed
+npm run db:demo
+~~~
+
+默认写入 `.data/earth-online.sqlite`，其中文件及所有测试数据均不会提交到 GitHub。
 
 ## 规划中的技术栈
 
-Next.js / TypeScript / Node.js / PostgreSQL；按需引入事件队列，无需 GPU 或 AI API。
+Next.js / TypeScript / Node.js / **SQLite（本地测试）→ Cloudflare D1（计划生产）**；按需引入事件队列，无需 GPU 或 AI API。
 
 ## 当前状态
 
-**已有可运行的纯 TypeScript 离线规则引擎原型。** 暂无网站、数据库、真实多人服务和完整成就系统。
+**已有可运行的纯 TypeScript 离线规则引擎原型，并加入本地 SQLite 持久化测试层。** 暂无网站、真实多人服务、生产 D1 和完整成就系统。
 
 ## 研发路线
 
