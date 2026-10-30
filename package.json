@@ -1,0 +1,16 @@
+{
+  "name": "earth-online-rule-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.16.0" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts",
+    "simulate": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/simulate.ts",
+    "verify": "npm run typecheck && npm test && npm run simulate"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
