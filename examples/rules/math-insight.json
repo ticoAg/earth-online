@@ -1,71 +1,24 @@
 {
   "id": "insight.math.cross-domain",
   "version": 1,
-  "enabled": true,
-  "description": "数学领域的跨学科研究线索（仅游戏内模拟，不代表现实科研成果）",
-  "listen": [
-    "study.completed",
-    "knowledge.link_created"
-  ],
-  "scope": "character",
+  "listen": ["study.completed"],
   "require": {
     "all": [
-      {
-        "path": "character.skills.math_analysis",
-        "op": "gte",
-        "value": 65
-      },
-      {
-        "path": "character.research.math.sessions",
-        "op": "gte",
-        "value": 20
-      },
-      {
-        "path": "character.knowledge.cross_domain_links",
-        "op": "gte",
-        "value": 3
-      },
-      {
-        "path": "character.state.fatigue",
-        "op": "lte",
-        "value": 75
-      }
+      { "path": "character.skills.math_analysis", "op": "gte", "value": 65 },
+      { "path": "character.research.math.sessions", "op": "gte", "value": 20 },
+      { "path": "character.knowledge.cross_domain_links", "op": "gte", "value": 3 },
+      { "path": "character.state.fatigue", "op": "lte", "value": 75 }
     ]
   },
   "chance": {
     "model": "additive",
     "base": 0.015,
     "modifiers": [
-      {
-        "path": "character.hidden.associative_thinking",
-        "weight": 0.025
-      },
-      {
-        "path": "event.context.new_perspective",
-        "weight": 0.02
-      }
+      { "path": "character.hidden.associative_thinking", "weight": 0.025 },
+      { "path": "event.context.new_perspective", "weight": 0.02 }
     ],
     "cap": 0.08
   },
-  "limit": {
-    "cooldown_days": 14,
-    "window_days": 7,
-    "max_attempts_per_window": 1
-  },
-  "effects": [
-    {
-      "type": "encounter.create",
-      "encounter_type": "research_lead",
-      "payload": {
-        "domain": "math",
-        "status": "unverified",
-        "requires_choice": true
-      }
-    }
-  ],
-  "metadata": {
-    "rarity": "rare",
-    "visibility": "hidden",
-    "game_only": true
-  }
+  "limit": { "cooldown_days": 14, "window_days": 7, "max_attempts_per_window": 1 },
+  "effects": [ { "type": "encounter.create", "encounter_type": "research_lead" } ]
 }
