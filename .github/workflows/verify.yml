@@ -27,3 +27,15 @@ jobs:
         run: |
           npm run world:demo
           npm run world:demo
+
+  local-d1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Run local D1 and scheduled Worker integration
+        run: npm run test:d1

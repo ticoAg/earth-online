@@ -70,15 +70,46 @@ export interface Encounter {
   type: 'research_lead';
   sourceEventId: string;
   source: 'system_simulated';
-  status: 'pending_choice';
+  ruleVersion?: number;
+  status: 'pending_choice' | 'resolved';
+  choice?: EncounterChoice['choice'];
+  choiceEventId?: string;
+  resolvedAt?: string;
   verification: 'unverified';
 }
+export interface EncounterChoice {
+  id: string;
+  actorId: string;
+  encounterId: string;
+  choice: 'continue_research' | 'archive';
+  occurredAt: string;
+  idempotencyKey: string;
+}
+export interface Achievement {
+  definitionId: 'first_record' | 'steady_practice' | 'research_lead';
+  version: 1;
+  category: 'ordinary' | 'accumulation' | 'hidden';
+  unlockedAt: string;
+  sourceEventId: string;
+  source: 'system_simulated';
+}
+export interface ChoiceResult {
+  eventId: string;
+  encounterId: string;
+  choice: EncounterChoice['choice'];
+  encounter: Encounter;
+  newAchievements: Achievement[];
+}
+export type CommandRecord =
+  | { type: 'study'; input: StudyEvent; result: EventResult }
+  | { type: 'choice'; input: EncounterChoice; result: ChoiceResult };
 export interface EventResult {
   eventId: string;
   delta: number;
   mastery: number;
   createdEncounters: Encounter[];
   attemptedRules: string[];
+  newAchievements: Achievement[];
 }
 export interface World {
   character: Character;
@@ -86,6 +117,9 @@ export interface World {
   idempotency: Record<string, EventResult>;
   attempts: RuleAttempt[];
   encounters: Encounter[];
+  achievements?: Achievement[];
+  choices?: EncounterChoice[];
+  commands?: Record<string, CommandRecord>;
 }
 
 const clamp = (n: number, min: number, max: number): number => Math.max(min, Math.min(max, n));
@@ -232,6 +266,12 @@ export const secureRoll: Roll = () => {
 
 export function processEvent(world: World, event: StudyEvent, rules: Rule[], roll: Roll = secureRoll): { world: World; result: EventResult } {
   if (event.actorId !== world.character.id) throw new Error('actor_mismatch');
+  const previous = commandAt(world, event.idempotencyKey);
+  if (previous) {
+    if (previous.type !== 'study') throw new Error('idempotency_conflict');
+    if (!sameStudy(previous.input, event)) throw new Error('idempotency_key_conflict');
+    return { world, result: structuredClone(previous.result) };
+  }
   if (Object.hasOwn(world.idempotency, event.idempotencyKey)) {
     const original = world.accepted.find(past => past.idempotencyKey === event.idempotencyKey);
     if (!original || original.id !== event.id || original.type !== event.type || original.source !== event.source ||
@@ -241,6 +281,7 @@ export function processEvent(world: World, event: StudyEvent, rules: Rule[], rol
     }
     return { world, result: structuredClone(world.idempotency[event.idempotencyKey]!) };
   }
+  if ((world.choices ?? []).some(choice => choice.id === event.id)) throw new Error('duplicate_event_id');
   const errors = validateEvent(world, event);
   if (errors.length) throw new Error(errors.join(','));
   const { character, delta } = applyProgression(world.character, event);
@@ -261,20 +302,36 @@ export function processEvent(world: World, event: StudyEvent, rules: Rule[], rol
     const triggered = value < probability;
     attempts.push({ eventId: event.id, ruleId: rule.id, version: rule.version, at: event.occurredAt, probability, roll: value, triggered });
     if (triggered) for (const effect of rule.effects) {
-      encounters.push({ id: `enc:${key}`, ruleId: rule.id, type: effect.encounter_type,
+      encounters.push({ id: `enc:${key}`, ruleId: rule.id, ruleVersion: rule.version, type: effect.encounter_type,
         sourceEventId: event.id, source: 'system_simulated', status: 'pending_choice', verification: 'unverified' });
     }
   }
+  const accepted = [...world.accepted, structuredClone(event)];
+  const newAchievements: Achievement[] = [];
+  const unlock = (definitionId: Achievement['definitionId'], category: Achievement['category']) => {
+    if (!(world.achievements ?? []).some(a => a.definitionId === definitionId)) {
+      newAchievements.push({ definitionId, version: 1, category, unlockedAt: event.occurredAt,
+        sourceEventId: event.id, source: 'system_simulated' });
+    }
+  };
+  unlock('first_record', 'ordinary');
+  if (new Set(accepted.map(e => e.occurredAt.slice(0, 10))).size >= 3) unlock('steady_practice', 'accumulation');
+  newAchievements.sort((a, b) => a.definitionId.localeCompare(b.definitionId));
   const result: EventResult = { eventId: event.id, delta, mastery: character.mathAnalysis,
-    createdEncounters: encounters, attemptedRules: attempts.map(a => a.ruleId) };
+    createdEncounters: encounters, attemptedRules: attempts.map(a => a.ruleId), newAchievements };
   return {
     result,
     world: {
       character,
-      accepted: [...world.accepted, structuredClone(event)],
+      accepted,
       idempotency: { ...world.idempotency, [event.idempotencyKey]: structuredClone(result) },
       attempts: [...world.attempts, ...attempts],
-      encounters: [...world.encounters, ...structuredClone(encounters)]
+      encounters: [...world.encounters, ...structuredClone(encounters)],
+      achievements: [...(world.achievements ?? []), ...structuredClone(newAchievements)],
+      choices: [...(world.choices ?? [])],
+      commands: { ...(world.commands ?? {}), [event.idempotencyKey]: {
+        type: 'study', input: structuredClone(event), result: structuredClone(result)
+      } }
     }
   };
 }
@@ -289,6 +346,69 @@ export function createWorld(id: string, initialMath: number, learningAdaptation:
       id, mathAnalysis: initialMath, hidden: { learningAdaptation, associativeThinking },
       fatigue: 0, researchSessions: 0, crossDomainSessions: 0, crossDomainLinks: 0, lastSettledAt: startAt
     },
-    accepted: [], idempotency: {}, attempts: [], encounters: []
+    accepted: [], idempotency: {}, attempts: [], encounters: [], achievements: [], choices: [], commands: {}
   };
+}
+
+
+function commandAt(world: World, key: string): CommandRecord | undefined {
+  return world.commands && Object.hasOwn(world.commands, key) ? world.commands[key] : undefined;
+}
+function sameStudy(a: StudyEvent, b: StudyEvent): boolean {
+  return a.id === b.id && a.actorId === b.actorId && a.type === b.type && a.source === b.source &&
+    a.occurredAt === b.occurredAt && a.durationMinutes === b.durationMinutes &&
+    a.payload?.subject === b.payload?.subject && a.payload?.method === b.payload?.method &&
+    a.idempotencyKey === b.idempotencyKey;
+}
+function sameChoice(a: EncounterChoice, b: EncounterChoice): boolean {
+  return a.id === b.id && a.actorId === b.actorId && a.encounterId === b.encounterId &&
+    a.choice === b.choice && a.occurredAt === b.occurredAt && a.idempotencyKey === b.idempotencyKey;
+}
+function validUtc(value: string): boolean {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString() === value.replace(/Z$/, value.includes('.') ? 'Z' : '.000Z');
+}
+
+/** Resolve a simulated opportunity once, without changing real-world study history. */
+export function resolveEncounter(world: World, command: EncounterChoice): { world: World; result: ChoiceResult } {
+  if (command.actorId !== world.character.id) throw new Error('actor_mismatch');
+  const previous = commandAt(world, command.idempotencyKey);
+  if (previous) {
+    if (previous.type !== 'choice' || !sameChoice(previous.input, command)) throw new Error('idempotency_conflict');
+    return { world, result: structuredClone(previous.result) };
+  }
+  if (Object.hasOwn(world.idempotency, command.idempotencyKey)) throw new Error('idempotency_conflict');
+  if (typeof command.id !== 'string' || !command.id || typeof command.idempotencyKey !== 'string' || !command.idempotencyKey) throw new Error('missing_id');
+  if (!['continue_research', 'archive'].includes(command.choice)) throw new Error('invalid_choice');
+  if (!validUtc(command.occurredAt)) throw new Error('invalid_time');
+  const encounter = world.encounters.find(e => e.id === command.encounterId);
+  if (!encounter) throw new Error('encounter_not_found');
+  if (encounter.status !== 'pending_choice') throw new Error('encounter_already_resolved');
+  if (world.accepted.some(e => e.id === command.id) || (world.choices ?? []).some(c => c.id === command.id)) throw new Error('duplicate_event_id');
+  const source = world.accepted.find(e => e.id === encounter.sourceEventId);
+  const sourceAttempts = world.attempts.filter(a => a.eventId === encounter.sourceEventId && a.ruleId === encounter.ruleId && a.triggered);
+  const exactAttempt = sourceAttempts.find(a => encounter.id === `enc:${a.eventId}|${a.ruleId}|${a.version}`);
+  const ruleVersion = encounter.ruleVersion ?? exactAttempt?.version ??
+    (sourceAttempts.length === 1 ? sourceAttempts[0]!.version : undefined);
+  if (!source || !Number.isInteger(ruleVersion) || ruleVersion! < 1) throw new Error('incomplete_encounter_state');
+  if (Date.parse(command.occurredAt) < Date.parse(source.occurredAt) + source.durationMinutes * 60_000) throw new Error('choice_before_source_end');
+  const resolved: Encounter = { ...encounter, ruleVersion, status: 'resolved', choice: command.choice,
+    choiceEventId: command.id, resolvedAt: command.occurredAt };
+  const newAchievements: Achievement[] = command.choice === 'continue_research' &&
+    !(world.achievements ?? []).some(a => a.definitionId === 'research_lead') ? [{
+      definitionId: 'research_lead', version: 1, category: 'hidden', unlockedAt: command.occurredAt,
+      sourceEventId: command.id, source: 'system_simulated'
+    }] : [];
+  const result: ChoiceResult = { eventId: command.id, encounterId: command.encounterId, choice: command.choice,
+    encounter: structuredClone(resolved), newAchievements: structuredClone(newAchievements) };
+  return { result, world: {
+    ...world,
+    encounters: world.encounters.map(e => e.id === encounter.id ? resolved : e),
+    achievements: [...(world.achievements ?? []), ...newAchievements],
+    choices: [...(world.choices ?? []), structuredClone(command)],
+    commands: { ...(world.commands ?? {}), [command.idempotencyKey]: {
+      type: 'choice', input: structuredClone(command), result: structuredClone(result)
+    } }
+  } };
 }

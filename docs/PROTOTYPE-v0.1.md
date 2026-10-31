@@ -2,7 +2,7 @@
 
 ## 当前实现范围
 
-这是一个**没有 AI、数据库和 Web 服务**的 TypeScript 离线规则引擎原型。核心代码在 [src/engine.ts](../src/engine.ts)，测试在 [tests/engine.test.ts](../tests/engine.test.ts)。
+这是一个**没有 AI 和 Web 服务**的 TypeScript 离线规则引擎原型。核心代码在 [src/engine.ts](../src/engine.ts)，测试在 [tests/engine.test.ts](../tests/engine.test.ts)。项目还提供独立的本地 SQLite 学习持久化与自治世界原型；其边界见 [SQLite 说明](DATABASE-SQLITE-D1-v0.2.md)。
 
 它包含：
 
@@ -12,6 +12,8 @@
 - 白名单规则字段、条件判定、可配置加法概率、一次抽样、冷却及机会次数限制。
 - 防重提交（内存幂等）、UTC 活动时间重叠检测、每日四小时上限。
 - 模拟内的研究线索事件，与真实个人经历严格区分。
+- 研究线索的继续探索或归档选择，以及普通、积累和隐藏三类最小游戏成就。
+- 白名单角色投影与区分自述和模拟来源的时间线。
 - 一键生成 1,000 个**纯虚构**角色，在两种行动脚本下分别运行 120 天；每种脚本各处理 120,000 条生成事件。
 
 ## 运行
@@ -23,6 +25,7 @@ npm install
 npm run typecheck
 npm test
 npm run simulate
+npm run example
 # 可选：指定可复现的测试种子
 npm run simulate -- --seed another-seed
 # 或一次执行全部：
@@ -63,14 +66,16 @@ npm run verify
 - `validateRule(rule)`
 - `evaluateRules(character, event, rules)`
 - `processEvent(world, event, rules, roll?)`
+- `resolveEncounter(world, command)`：结算一次线索选择；重复请求返回首次结果。
+- `getTimeline(world)` 和 `getPublicCharacter(world)`（从 `src/projection.ts` 导入）：只读投影，不返回隐藏属性或抽样细节。
 
 `processEvent` 会返回新世界状态，不会修改旧对象；同一幂等键用于不同内容时会报错。调用方仍需将世界状态视为不可变数据。规则配置示例见 [math-insight.json](../examples/rules/math-insight.json)。
 
 ## 已知限制（禁止直接接入真实用户开放服务）
 
-1. **内存状态：** 断电即丢失；幂等仅在当前进程有效，不支持并发事务。
-2. **尚无账户认证、数据库、隐私隔离、实时多人通信或管理员审核。**
-3. **只有一条数学领域规则。** 当前引擎不是全学科通用游戏，也尚未实现成就系统或玩家关系系统。
+1. **单人闭环的选择结算仍仅在内存中：** 断电即丢失；其幂等不支持跨进程或并发事务。SQLite 层当前覆盖学习事件。
+2. **尚无账户认证、生产数据库、隐私隔离、实时多人通信或管理员审核。**
+3. **只有一条数学领域规则和三项最小成就。** 当前引擎不是全学科通用游戏，也尚未实现玩家关系系统或完整研究任务链。
 4. 概率参数、成长曲线、跨领域联系均为游戏设计假设，尚未调参验证。
 5. 离线模拟使用公开可预测的哈希随机源，仅为了测试复现；游戏实服抽签应使用服务端安全 RNG，第一次结果写入事务日志，并保护客户端不可操作。
 6. `applyProgression`、`evaluateRules` 是纯计算函数；`processEvent` 还未实现数据库锁、outbox、历史规则版本重放或多端重复提交。
@@ -79,16 +84,14 @@ npm run verify
 
 ## 下一步（按优先级）
 
-1. 把引擎转换为依赖最小、可测试的独立 domain 模块；逐步支持更多领域与事件类型。
-2. PostgreSQL 持久化：角色、事件、规则尝试、际遇，含幂等唯一约束和事务。
-3. 实现明确的成就条件与解锁，不让自由录入直接解锁真实世界奖项。
-4. 建立最小网页入口与事件表单、角色面板和时间线。
-5. 逐步加入角色关系、双向同意与共享事件；以离线批量实验持续调优。
+1. 完善 SQLite / D1 持久化：角色、事件、规则尝试、际遇选择与成就，含幂等唯一约束和事务。
+2. 建立最小网页入口与事件表单、角色面板和时间线。
+3. 扩充行为和研究任务内容，再逐步加入双方同意的角色关系与共享事件；以离线批量实验持续调优。
 
 ## 与现有设计文档的关系
 
 [EVENT-ENGINE-v0.1.md](EVENT-ENGINE-v0.1.md) 是**目标协议**；本原型是其可运行子集。
 
-文档中的 `attribute.add`、`event.emit`、`achievement.unlock` 等效果尚未实现；目前只实现 `encounter.create`。规则样例已调整为引擎支持的字段集合（例如 `chance.model = additive`）。请勿将需求文档所有功能理解为已交付。
+规则 DSL 中的 `attribute.add`、`event.emit`、`achievement.unlock` 等效果尚未实现；目前规则效果只支持 `encounter.create`。三项成就在命令结算中直接判定。规则样例已调整为引擎支持的字段集合（例如 `chance.model = additive`）。请勿将需求文档所有功能理解为已交付。
 
 原型仅支持 `all` 条件与 `gte`、`lte`、`eq` 比较，以及示例中的限定路径；概率修正项只接受归一化关联思维或新视角布尔值。`event.context.new_perspective` 在此由跨领域学习方式推导。规则协议中的其他条件与路径仍待实现。

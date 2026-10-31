@@ -9,6 +9,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts",
+    "test:d1": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/integration/*.test.ts",
+    "example": "node --disable-warning=ExperimentalWarning --experimental-strip-types examples/single-player.ts",
     "simulate": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/simulate.ts",
     "verify": "npm run typecheck && npm test && npm run simulate",
     "db:migrate": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/db.ts migrate",
@@ -25,6 +27,7 @@
     "world:stage": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/world.ts stage"
   },
   "devDependencies": {
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "wrangler": "4.156.0"
   }
 }

@@ -78,7 +78,7 @@ test('simultaneous schedulers commit each tick once, no duplicate world history'
   assert.equal(a.processed+b.processed+c.processed,31);
   assert.equal((await getWorld(db,'earth-main'))?.lastTick,31);
   const events=await recentWorldEvents(db,'earth-main',100);
-  assert.equal(events.length,6); // season: day 1 and 31, festivals: days 7,14,21,28
+  assert.equal(events.filter(event=>['world.season_changed','world.festival','world.rules_changed'].includes(event.type)).length,6);
 }));
 
 test('rejects bad time, bad rules, wrong statuses and invalid tick budgets',async()=>fixture(async db=>{

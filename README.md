@@ -15,15 +15,11 @@
 
 ## 文档
 
-- [产品需求文档 PRD V0.1](docs/PRD-v0.1.md)：产品愿景与功能需求。
-- [核心机制设计 V0.1](docs/CORE-MECHANICS-v0.1.md)：显性/隐藏属性、非线性成长、知识关联、际遇和顿悟。
-- [事件引擎与规则协议 V0.1](docs/EVENT-ENGINE-v0.1.md)：结构化事件、规则配置、概率计算、幂等处理、审计和数据结构。
-- [MVP 开发方案 V0.1](docs/MVP-PLAN-v0.1.md)：垂直切片、分阶段任务、验收标准与风险。
-- [数学顿悟规则样例](examples/rules/math-insight.json)：纯配置的隐藏际遇示例。
+从 [文档入口](docs/index.md) 查看产品、技术与历史设计；[需求与阶段路线图](docs/product/roadmap.md) 跟踪后续实现与验收。
 
 ## 可运行原型
 
-当前代码实现数学学习成长、隐藏特性、一次性概率际遇、冷却、内存幂等与可复现离线模拟。
+当前代码实现数学学习成长、概率际遇与选择、三类游戏成就、公开角色投影、内存幂等与可复现离线模拟。
 
 - [原型使用说明及已知限制](docs/PROTOTYPE-v0.1.md)
 - [SQLite 开发与 D1 迁移计划 V0.2](docs/DATABASE-SQLITE-D1-v0.2.md)
@@ -37,9 +33,10 @@
 ~~~bash
 npm install
 npm run verify
+npm run example
 ~~~
 
-该命令依次执行 TypeScript 类型检查、单元测试（含临时 SQLite 数据库验证）及两组各 1,000 个虚构角色的离线模拟（每组 120,000 条事件）。不会接入 AI 或 GPU。
+`npm run verify` 依次执行 TypeScript 类型检查、单元测试（含临时 SQLite 数据库验证）及两组各 1,000 个虚构角色的离线模拟（每组 120,000 条事件）。`npm run example` 演示单人玩法。不会接入 AI 或 GPU。
 
 本地数据库演示：
 
@@ -57,7 +54,7 @@ Next.js / TypeScript / Node.js / **SQLite（本地测试）→ Cloudflare D1（�
 
 ## 当前状态
 
-**已有可运行的纯 TypeScript 离线规则引擎原型，并加入本地 SQLite 持久化测试层。** 暂无网站、真实多人服务、生产 D1 和完整成就系统。
+**已有可运行的单人离线玩法原型、SQLite 持久化测试层和自治世界原型。** 暂无网站、账户、真实多人服务和生产 D1；成就和内容仅覆盖首个最小闭环。
 
 ## 研发路线
 
@@ -69,7 +66,7 @@ Next.js / TypeScript / Node.js / **SQLite（本地测试）→ Cloudflare D1（�
 
 ## 自治世界引擎（V0.2）
 
-支持无玩家在线仍可推进世界时间、更新季节与公共活动、暂停维护、按世界 tick 生效的新规则版本，并使用 SQLite 记录世界历史。
+支持无玩家在线仍可推进世界时间、安排并结算延期公共事件、暂停维护、按世界 tick 生效的新规则版本，并使用 SQLite 记录世界历史。
 
 - [世界运行实现与运行方式](docs/WORLD-IMPLEMENTATION-v0.2.md)
 - [自治世界引擎源码](src/world/runtime.ts)
@@ -82,3 +79,12 @@ npm run world:status
 ```
 
 以上仅在本地 SQLite 模拟。Cloudflare D1 尚未部署，也未开启公网世界服务。
+
+## 本地 D1 集成测试
+
+```bash
+npm ci
+npm run test:d1
+```
+
+该测试使用 Wrangler 的本地 workerd 和临时 D1 存储，执行迁移并触发 Worker 的 `scheduled()`；验证世界必须先显式启动、零玩家推进、延期任务、重复触发、暂停、CAS 和批量事务回滚。它不需要 Cloudflare 凭据，也不连接或修改远程数据库。[wrangler.local.jsonc](wrangler.local.jsonc) 仅供本地测试，数据库 ID 是占位值，不应部署。测试随 CI 独立运行；生产 D1、管理员鉴权、备份与恢复仍需另行完成和验证。

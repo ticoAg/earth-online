@@ -1,4 +1,4 @@
-import { createWorld, processEvent, type World, type StudyEvent, type Rule, type Roll, type EventResult, type RuleAttempt, type Encounter } from '../engine.ts';
+import { createWorld, processEvent, type World, type StudyEvent, type Rule, type Roll, type EventResult, type RuleAttempt, type Encounter, type Achievement, type CommandRecord } from '../engine.ts';
 
 /** The subset of Cloudflare D1's prepared-statement API needed by this prototype. */
 export type SqlValue = string | number | null;
@@ -29,11 +29,21 @@ async function loadSnapshot(db: SqlDatabase, characterId: string): Promise<Snaps
   if (!row) return null;
   const accepted: StudyEvent[] = [];
   const idempotency: Record<string, EventResult> = Object.create(null) as Record<string, EventResult>;
+  const commands: Record<string, CommandRecord> = Object.create(null) as Record<string, CommandRecord>;
+  const achievements = new Map<Achievement['definitionId'], Achievement>();
   for (const event of events?.results ?? []) {
     const key = asString(event.idempotency_key);
-    accepted.push(JSON.parse(asString(event.event_json)) as StudyEvent);
-    Object.defineProperty(idempotency, key, { value: JSON.parse(asString(event.result_json)) as EventResult,
+    const input = JSON.parse(asString(event.event_json)) as StudyEvent;
+    const result = JSON.parse(asString(event.result_json)) as EventResult;
+    accepted.push(input);
+    Object.defineProperty(idempotency, key, { value: result,
       enumerable: true, configurable: true, writable: true });
+    commands[key] = { type: 'study', input: structuredClone(input), result: structuredClone(result) };
+    // Read the original awards, never re-evaluate historical events using today's definitions.
+    // Results written before S1 have no awards and retain their original replay shape.
+    for (const achievement of result.newAchievements ?? []) {
+      if (!achievements.has(achievement.definitionId)) achievements.set(achievement.definitionId, structuredClone(achievement));
+    }
   }
   return {
     revision: asString(row.revision_token),
@@ -41,6 +51,9 @@ async function loadSnapshot(db: SqlDatabase, characterId: string): Promise<Snaps
       character: JSON.parse(asString(row.state_json)) as World['character'],
       accepted,
       idempotency,
+      achievements: [...achievements.values()],
+      choices: [],
+      commands,
       attempts: (attempts?.results ?? []).map(r => JSON.parse(asString(r.attempt_json)) as RuleAttempt),
       encounters: (encounters?.results ?? []).map(r => JSON.parse(asString(r.encounter_json)) as Encounter)
     }
@@ -49,7 +62,8 @@ async function loadSnapshot(db: SqlDatabase, characterId: string): Promise<Snaps
 
 /** Create only a synthetic/test character for the initial prototype. Auth is not implemented. */
 export async function insertCharacter(db: SqlDatabase, world: World): Promise<void> {
-  if (world.accepted.length || world.attempts.length || world.encounters.length || Object.keys(world.idempotency).length) {
+  if (world.accepted.length || world.attempts.length || world.encounters.length || Object.keys(world.idempotency).length ||
+      world.achievements?.length || world.choices?.length || Object.keys(world.commands ?? {}).length) {
     throw new Error('insert_requires_fresh_world');
   }
   await db.batch([statement(db, 'INSERT INTO characters (id, state_json, revision_token) VALUES (?, ?, ?)',

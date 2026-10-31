@@ -32,11 +32,31 @@ export interface WorldState {
 export interface WorldEvent {
   worldId: string;
   tick: number;
-  type: 'world.season_changed' | 'world.festival' | 'world.rules_changed';
+  type: 'world.season_changed' | 'world.festival' | 'world.rules_changed' | WorldJobType;
+  key?: string;
   ruleVersion: number;
   payload: Record<string, string | number>;
 }
 export interface AdvanceResult { processed: number; lastTick: number; events: WorldEvent[]; backlog: number }
+export type WorldJobType = 'world.research_activity' | 'world.research_report';
+export interface WorldJobInput {
+  idempotencyKey: string;
+  dueTick: number;
+  type: WorldJobType;
+  payload: { region: string; topic: string; followUpAfterTicks?: number };
+  ruleVersion: number;
+  sourceEvent?: { tick: number; eventKey: string };
+  maxAttempts?: number;
+}
+export interface WorldJob {
+  idempotencyKey: string; dueTick: number; nextAttemptTick: number; type: WorldJobType;
+  payload: WorldJobInput['payload']; ruleVersion: number; sourceTick: number | null;
+  sourceEventKey: string | null; rootKey: string; depth: number;
+  status: 'pending' | 'completed' | 'failed'; attempts: number; maxAttempts: number;
+  lastError: string | null; completedTick: number | null;
+}
+export const WORLD_JOB_BUDGET = 16;
+export const MAX_JOB_DEPTH = 4;
 const seasons: readonly Season[] = ['spring','summer','autumn','winter'];
 const stmt = (db: Database, sql: string, ...args: SqlValue[]) => db.prepare(sql).bind(...args);
 const text = (v: unknown): string => { if (typeof v !== 'string') throw Error('invalid_world_row'); return v; };
@@ -154,10 +174,13 @@ function eventsForTick(world:WorldState,tick:number, rule:RuleSet):{season:Seaso
 }
 /** Claim exactly one due world tick. Other workers will lose CAS and retry safely. */
 async function commitNextTick(db:Database,id:string,nowMs:number):Promise<{ committed:boolean; events:WorldEvent[]; nextTick:number }|null> {
-  const [stateRes,rulesRes]=await db.batch([
+  const [stateRes,rulesRes,jobsRes]=await db.batch([
     stmt(db,'SELECT * FROM world_runtime WHERE world_id=?',id),
     stmt(db,`SELECT version,effective_tick,season_length_ticks,resource_per_tick,festival_every_ticks
-      FROM world_rule_sets WHERE world_id=? ORDER BY effective_tick`,id)
+      FROM world_rule_sets WHERE world_id=? ORDER BY effective_tick`,id),
+    stmt(db,`SELECT * FROM world_jobs WHERE world_id=? AND status='pending'
+      AND next_attempt_tick <= (SELECT last_committed_tick+1 FROM world_runtime WHERE world_id=?)
+      ORDER BY due_tick,idempotency_key LIMIT ?`,id,id,WORLD_JOB_BUDGET)
   ]);
   const state=stateRes?.results[0];
   if(!state) throw Error('world_not_found');
@@ -179,11 +202,43 @@ async function commitNextTick(db:Database,id:string,nowMs:number):Promise<{ comm
       SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM world_runtime WHERE world_id=? AND revision_token=?)`,
       id,tick,rule.version,next.season,next.resources,id,revision)
   ];
+  const jobs = (jobsRes?.results ?? []).map(jobFromRow);
+  const jobChildren: WorldJob[] = [];
+  for (const job of jobs) {
+    let error: string | null = null;
+    try { validateJobPayload(job.type, job.payload); } catch { error = 'invalid_job_payload'; }
+    const attempts = job.attempts + 1;
+    const status = error ? (attempts >= job.maxAttempts ? 'failed' : 'pending') : 'completed';
+    queries.push(stmt(db,`UPDATE world_jobs SET attempts=?,status=?,next_attempt_tick=?,last_error=?,completed_tick=?
+      WHERE world_id=? AND idempotency_key=? AND status='pending'
+      AND EXISTS(SELECT 1 FROM world_runtime WHERE world_id=? AND revision_token=?)`,
+      attempts,status,error ? tick+1 : job.nextAttemptTick,error,error ? null : tick,id,job.idempotencyKey,id,revision));
+    if (error) continue;
+    const key = `job:${job.idempotencyKey}`;
+    next.events.push({worldId:id,tick,type:job.type,key,ruleVersion:job.ruleVersion,payload:{
+      region:job.payload.region,topic:job.payload.topic,jobKey:job.idempotencyKey,rootKey:job.rootKey,
+      depth:job.depth,...(job.sourceTick === null ? {} : {sourceTick:job.sourceTick,sourceEventKey:job.sourceEventKey!})
+    }});
+    if (job.type === 'world.research_activity' && job.payload.followUpAfterTicks && job.depth < MAX_JOB_DEPTH) {
+      jobChildren.push(newJob({idempotencyKey:`@child:${JSON.stringify([job.idempotencyKey,"report"])}`,dueTick:tick+job.payload.followUpAfterTicks,
+        type:'world.research_report',payload:{region:job.payload.region,topic:job.payload.topic},ruleVersion:job.ruleVersion,
+        sourceEvent:{tick,eventKey:key}},job.rootKey,job.depth+1));
+    }
+  }
+  // A world event schedules a later public activity; that activity creates a later report.
+  // The origin rule version stays pinned even when a future ruleset becomes active.
+  for (const e of next.events.filter(e => e.type === 'world.season_changed')) {
+    const key = `@season:${tick}:research`;
+    jobChildren.push(newJob({idempotencyKey:key,dueTick:tick+10,type:'world.research_activity',
+      payload:{region:'global',topic:`${e.payload.season} research`,followUpAfterTicks:5},ruleVersion:e.ruleVersion,
+      sourceEvent:{tick,eventKey:e.type}},`event:${tick}:${e.type}`,1));
+  }
   for(const e of next.events){
     queries.push(stmt(db,`INSERT INTO world_events(world_id,tick_index,event_key,event_type,rule_version,payload_json)
       SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM world_runtime WHERE world_id=? AND revision_token=?)`,
-      id,tick,e.type,e.type,rule.version,JSON.stringify(e.payload),id,revision));
+      id,tick,e.key ?? e.type,e.type,e.ruleVersion,JSON.stringify(e.payload),id,revision));
   }
+  for (const child of jobChildren) queries.push(insertJob(db,id,child,revision));
   const results=await db.batch(queries);
   if(results[0]?.meta?.changes!==1) return {committed:false,events:[],nextTick:tick};
   return {committed:true,events:next.events,nextTick:tick};
@@ -217,9 +272,100 @@ export async function advanceDueWorld(db:Database,id:string,nowMs:number,maxTick
 }
 export async function recentWorldEvents(db:Database,id:string,limit=50):Promise<WorldEvent[]> {
   if(!Number.isInteger(limit)||limit<1||limit>500)throw Error('invalid_query_limit');
-  const [r]=await db.batch([stmt(db,`SELECT world_id,tick_index,event_type,rule_version,payload_json
+  const [r]=await db.batch([stmt(db,`SELECT world_id,tick_index,event_key,event_type,rule_version,payload_json
     FROM world_events WHERE world_id=? ORDER BY tick_index DESC, event_key LIMIT ?`,id,limit)]);
   return (r?.results??[]).map(row=>({worldId:text(row.world_id),tick:num(row.tick_index),
-    type:text(row.event_type) as WorldEvent['type'],ruleVersion:num(row.rule_version),
+    type:text(row.event_type) as WorldEvent['type'],...(text(row.event_key).startsWith('job:') ? {key:text(row.event_key)} : {}),ruleVersion:num(row.rule_version),
     payload:JSON.parse(text(row.payload_json)) as WorldEvent['payload']}));
+}
+
+function validateJobPayload(type: WorldJobType, payload: WorldJobInput['payload']): void {
+  if (!['world.research_activity','world.research_report'].includes(type) || !payload || typeof payload !== 'object' ||
+      typeof payload.region !== 'string' || !payload.region || payload.region.length > 100 ||
+      typeof payload.topic !== 'string' || !payload.topic || payload.topic.length > 200 ||
+      Object.keys(payload).some(key => !['region','topic','followUpAfterTicks'].includes(key)) ||
+      (payload.followUpAfterTicks !== undefined && (type !== 'world.research_activity' ||
+        !Number.isSafeInteger(payload.followUpAfterTicks) || payload.followUpAfterTicks < 1 || payload.followUpAfterTicks > 100))) {
+    throw Error('invalid_job_payload');
+  }
+}
+function newJob(input: WorldJobInput, rootKey: string, depth: number): WorldJob {
+  return {idempotencyKey:input.idempotencyKey,dueTick:input.dueTick,nextAttemptTick:input.dueTick,type:input.type,
+    payload:{region:input.payload.region,topic:input.payload.topic,...(input.payload.followUpAfterTicks === undefined ? {} :
+      {followUpAfterTicks:input.payload.followUpAfterTicks})},ruleVersion:input.ruleVersion,
+    sourceTick:input.sourceEvent?.tick ?? null,sourceEventKey:input.sourceEvent?.eventKey ?? null,rootKey,depth,
+    status:'pending',attempts:0,maxAttempts:input.maxAttempts ?? 3,lastError:null,completedTick:null};
+}
+function jobFromRow(row: Record<string,unknown>): WorldJob {
+  let payload: WorldJobInput['payload'];
+  try { payload=JSON.parse(text(row.payload_json)) as WorldJobInput['payload']; } catch { payload={} as WorldJobInput['payload']; }
+  return {idempotencyKey:text(row.idempotency_key),dueTick:num(row.due_tick),nextAttemptTick:num(row.next_attempt_tick),
+    type:text(row.event_type) as WorldJobType,payload,ruleVersion:num(row.rule_version),
+    sourceTick:row.source_tick===null ? null : num(row.source_tick),sourceEventKey:row.source_event_key===null ? null : text(row.source_event_key),
+    rootKey:text(row.root_key),depth:num(row.depth),status:text(row.status) as WorldJob['status'],attempts:num(row.attempts),
+    maxAttempts:num(row.max_attempts),lastError:row.last_error===null ? null : text(row.last_error),
+    completedTick:row.completed_tick===null ? null : num(row.completed_tick)};
+}
+function insertJob(db: Database,id:string,job:WorldJob,revision:string): Statement {
+  return stmt(db,`INSERT INTO world_jobs(world_id,idempotency_key,due_tick,next_attempt_tick,event_type,payload_json,
+    rule_version,source_tick,source_event_key,root_key,depth,max_attempts)
+    SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM world_runtime WHERE world_id=? AND revision_token=?)`,
+    id,job.idempotencyKey,job.dueTick,job.nextAttemptTick,job.type,JSON.stringify(job.payload),job.ruleVersion,
+    job.sourceTick,job.sourceEventKey,job.rootKey,job.depth,job.maxAttempts,id,revision);
+}
+export async function listWorldJobs(db: Database,id:string): Promise<WorldJob[]> {
+  const [result]=await db.batch([stmt(db,'SELECT * FROM world_jobs WHERE world_id=? ORDER BY due_tick,idempotency_key',id)]);
+  return (result?.results ?? []).map(jobFromRow);
+}
+/** Trusted local/domain API. Public administrator authorization belongs to the service boundary. */
+export async function scheduleWorldJob(db: Database,id:string,input:WorldJobInput): Promise<WorldJob> {
+  input=structuredClone(input);
+  if (typeof input.idempotencyKey !== 'string' || !input.idempotencyKey || input.idempotencyKey.length>128 ||
+      input.idempotencyKey.startsWith('@') || !Number.isSafeInteger(input.dueTick) || input.dueTick<1 ||
+      !Number.isSafeInteger(input.ruleVersion) || input.ruleVersion<1 ||
+      !Number.isInteger(input.maxAttempts ?? 3) || (input.maxAttempts ?? 3)<1 || (input.maxAttempts ?? 3)>3 ||
+      (input.sourceEvent !== undefined && (!Number.isSafeInteger(input.sourceEvent.tick) || input.sourceEvent.tick<1 ||
+        typeof input.sourceEvent.eventKey !== 'string' || !input.sourceEvent.eventKey))) throw Error('invalid_world_job');
+  validateJobPayload(input.type,input.payload);
+  const normalized=newJob(input,`job:${input.idempotencyKey}`,1);
+  for(let retry=0;retry<10;retry++) {
+    const [stateRows,existingRows,ruleRows,sourceRows,parentRows]=await db.batch([
+      stmt(db,'SELECT * FROM world_runtime WHERE world_id=?',id),
+      stmt(db,'SELECT * FROM world_jobs WHERE world_id=? AND idempotency_key=?',id,input.idempotencyKey),
+      stmt(db,'SELECT effective_tick FROM world_rule_sets WHERE world_id=? AND version=?',id,input.ruleVersion),
+      stmt(db,'SELECT rule_version FROM world_events WHERE world_id=? AND tick_index=? AND event_key=?',
+        id,input.sourceEvent?.tick ?? null,input.sourceEvent?.eventKey ?? null),
+      stmt(db,'SELECT * FROM world_jobs WHERE world_id=? AND idempotency_key=?',id,
+        input.sourceEvent?.eventKey.startsWith('job:') ? input.sourceEvent.eventKey.slice(4) : null)
+    ]);
+    const previous=existingRows?.results[0];
+    if(previous) {
+      const old=jobFromRow(previous);
+      if(old.dueTick!==normalized.dueTick || old.type!==normalized.type || old.ruleVersion!==normalized.ruleVersion ||
+          old.sourceTick!==normalized.sourceTick || old.sourceEventKey!==normalized.sourceEventKey || old.maxAttempts!==normalized.maxAttempts ||
+          JSON.stringify(newJob({...input,payload:old.payload},'',1).payload)!==JSON.stringify(normalized.payload)) throw Error('world_job_idempotency_conflict');
+      return old;
+    }
+    const row=stateRows?.results[0];
+    if(!row) throw Error('world_not_found');
+    const world=fromRow(row);
+    if(world.status==='MAINTENANCE') throw Error('world_in_maintenance');
+    if(input.dueTick<=world.lastTick) throw Error('job_must_be_future');
+    if(!ruleRows?.results[0] || num(ruleRows.results[0].effective_tick)>Math.max(1,world.lastTick)) throw Error('invalid_job_rule_version');
+    if(input.sourceEvent) {
+      const source=sourceRows?.results[0];
+      if(!source || input.sourceEvent.tick>world.lastTick || num(source.rule_version)!==input.ruleVersion) throw Error('invalid_job_source_event');
+      const parent=parentRows?.results[0];
+      normalized.rootKey=parent ? text(parent.root_key) : `event:${input.sourceEvent.tick}:${input.sourceEvent.eventKey}`;
+      normalized.depth=parent ? num(parent.depth)+1 : 1;
+      if(normalized.depth>MAX_JOB_DEPTH) throw Error('world_job_depth_exceeded');
+    }
+    const revision=versionToken();
+    const results=await db.batch([
+      stmt(db,'UPDATE world_runtime SET revision_token=? WHERE world_id=? AND revision_token=?',revision,id,world.revision),
+      insertJob(db,id,normalized,revision)
+    ]);
+    if(results[0]?.meta?.changes===1) return structuredClone(normalized);
+  }
+  throw Error('world_job_schedule_conflict');
 }
