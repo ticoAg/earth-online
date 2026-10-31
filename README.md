@@ -66,3 +66,19 @@ Next.js / TypeScript / Node.js / **SQLite（本地测试）→ Cloudflare D1（�
 - **P2：** 更丰富的知识网络、长期研究、共享世界模拟和历史演化。
 
 *这是项目的初始产品说明，不代表真实人生预测系统。*
+
+## 自治世界引擎（V0.2）
+
+支持无玩家在线仍可推进世界时间、更新季节与公共活动、暂停维护、按世界 tick 生效的新规则版本，并使用 SQLite 记录世界历史。
+
+- [世界运行实现与运行方式](docs/WORLD-IMPLEMENTATION-v0.2.md)
+- [自治世界引擎源码](src/world/runtime.ts)
+- [本地世界管理命令](scripts/world.ts)
+- [Cloudflare scheduled() 示例](src/worker.ts)
+
+```bash
+npm run world:demo
+npm run world:status
+```
+
+以上仅在本地 SQLite 模拟。Cloudflare D1 尚未部署，也未开启公网世界服务。

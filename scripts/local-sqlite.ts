@@ -38,6 +38,8 @@ export function openLocalDatabase(filename: string): SqlDatabase & { migrate(): 
     migrate(): void {
       const sql = readFileSync(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8');
       db.exec(sql);
+      const worldSql = readFileSync(new URL('../migrations/0002_world_runtime.sql', import.meta.url), 'utf8');
+      db.exec(worldSql);
     },
     close(): void { db.close(); }
   };

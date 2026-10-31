@@ -10,5 +10,10 @@
       "database_id": "REPLACE_WITH_REAL_D1_DATABASE_ID",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
+  }
 }

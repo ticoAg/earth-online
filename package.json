@@ -1,6 +1,6 @@
 {
   "name": "earth-online-rule-prototype",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -13,7 +13,16 @@
     "verify": "npm run typecheck && npm test && npm run simulate",
     "db:migrate": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/db.ts migrate",
     "db:seed": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/db.ts seed",
-    "db:demo": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/db.ts demo"
+    "db:demo": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/db.ts demo",
+    "world:demo": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/world.ts demo",
+    "world:status": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/world.ts status",
+    "world:init": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/world.ts init",
+    "world:start": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/world.ts start",
+    "world:advance": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/world.ts advance",
+    "world:pause": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/world.ts pause",
+    "world:maintenance": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/world.ts maintenance",
+    "world:resume": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/world.ts resume",
+    "world:stage": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/world.ts stage"
   },
   "devDependencies": {
     "typescript": "^5.8.3"

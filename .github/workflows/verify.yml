@@ -23,3 +23,7 @@ jobs:
           npm run db:seed
           npm run db:demo
           npm run db:demo
+      - name: Autonomous world zero-player SQLite demo
+        run: |
+          npm run world:demo
+          npm run world:demo
